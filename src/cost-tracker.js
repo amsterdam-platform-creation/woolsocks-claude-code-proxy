@@ -1,5 +1,13 @@
 // src/cost-tracker.js - Cost tracking with Vertex AI europe-west1 pricing
 // Prices per 1 million tokens (10% regional premium included)
+// Includes persistent storage for monthly cost tracking
+
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const COSTS_FILE = path.join(__dirname, '..', 'costs-history.json');
 
 const VERTEX_EU_PRICING = {
   // Claude Opus 4.5 (europe-west1 regional pricing)
@@ -17,6 +25,66 @@ const VERTEX_EU_PRICING = {
 
 // Default fallback (Opus pricing)
 const DEFAULT_PRICING = { input: 5.50, output: 27.50, cacheWrite: 6.875, cacheRead: 0.55 };
+
+// Load or initialize persistent cost history
+function loadCostHistory() {
+  try {
+    if (fs.existsSync(COSTS_FILE)) {
+      return JSON.parse(fs.readFileSync(COSTS_FILE, 'utf-8'));
+    }
+  } catch (err) {
+    console.error('[Cost] Failed to load cost history:', err.message);
+  }
+  return { daily: {}, monthly: {} };
+}
+
+function saveCostHistory(history) {
+  try {
+    fs.writeFileSync(COSTS_FILE, JSON.stringify(history, null, 2));
+  } catch (err) {
+    console.error('[Cost] Failed to save cost history:', err.message);
+  }
+}
+
+function getDateKey() {
+  return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+}
+
+function getMonthKey() {
+  return new Date().toISOString().slice(0, 7); // YYYY-MM
+}
+
+// Persist a cost to history
+function persistCost(cost, model) {
+  const history = loadCostHistory();
+  const dateKey = getDateKey();
+  const monthKey = getMonthKey();
+  const modelKey = model.split('@')[0];
+
+  // Initialize daily entry
+  if (!history.daily[dateKey]) {
+    history.daily[dateKey] = { totalCost: 0, requests: 0, byModel: {} };
+  }
+  history.daily[dateKey].totalCost += cost.totalCost;
+  history.daily[dateKey].requests += 1;
+  if (!history.daily[dateKey].byModel[modelKey]) {
+    history.daily[dateKey].byModel[modelKey] = 0;
+  }
+  history.daily[dateKey].byModel[modelKey] += cost.totalCost;
+
+  // Initialize monthly entry
+  if (!history.monthly[monthKey]) {
+    history.monthly[monthKey] = { totalCost: 0, requests: 0, byModel: {} };
+  }
+  history.monthly[monthKey].totalCost += cost.totalCost;
+  history.monthly[monthKey].requests += 1;
+  if (!history.monthly[monthKey].byModel[modelKey]) {
+    history.monthly[monthKey].byModel[modelKey] = 0;
+  }
+  history.monthly[monthKey].byModel[modelKey] += cost.totalCost;
+
+  saveCostHistory(history);
+}
 
 // Session cost tracking
 let sessionCost = {
@@ -86,9 +154,34 @@ export function recordUsage(response, model) {
   sessionCost.byModel[modelKey].tokens += (usage.input_tokens || 0) + (usage.output_tokens || 0);
   sessionCost.byModel[modelKey].requests += 1;
 
+  // Persist to file for monthly tracking
+  persistCost(cost, model);
+
   console.log(`[Cost] Request: $${cost.totalCost.toFixed(4)} | Session: $${sessionCost.totalCostUSD.toFixed(4)} | Model: ${modelKey}`);
 
   return cost;
+}
+
+/**
+ * Get monthly cost from history
+ * @returns {object} Monthly cost data
+ */
+export function getMonthlyCosts() {
+  const history = loadCostHistory();
+  const monthKey = getMonthKey();
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const monthName = monthNames[new Date().getMonth()];
+
+  const monthly = history.monthly[monthKey] || { totalCost: 0, requests: 0, byModel: {} };
+
+  return {
+    month: monthKey,
+    monthName,
+    totalCostUSD: monthly.totalCost,
+    formattedCost: `$${monthly.totalCost.toFixed(2)}`,
+    requests: monthly.requests,
+    byModel: monthly.byModel,
+  };
 }
 
 /**
@@ -98,6 +191,7 @@ export function recordUsage(response, model) {
 export function getSessionCosts() {
   const durationMs = Date.now() - sessionCost.startTime;
   const durationMins = durationMs / 60000;
+  const monthly = getMonthlyCosts();
 
   return {
     totalCostUSD: sessionCost.totalCostUSD,
@@ -116,6 +210,12 @@ export function getSessionCosts() {
       startTime: new Date(sessionCost.startTime).toISOString(),
       durationMinutes: Math.round(durationMins * 10) / 10,
       costPerMinute: durationMins > 0 ? sessionCost.totalCostUSD / durationMins : 0,
+    },
+    monthly: {
+      month: monthly.monthName,
+      totalCostUSD: monthly.totalCostUSD,
+      formattedCost: monthly.formattedCost,
+      requests: monthly.requests,
     },
     pricing: 'Vertex AI europe-west1 (10% regional premium)',
   };

@@ -3,3 +3,4 @@ node_modules/
 .DS_Store
 *.log
 /bin/vision-ocr
+costs-history.json
