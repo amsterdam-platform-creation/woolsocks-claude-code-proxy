@@ -105,6 +105,31 @@ Your statusline will show:
 - **Claude Settings** (~/.claude/settings.json) - Connects Claude Code to the statusline
 - **Shell Alias** (claude-eu) - Automatically starts proxy & routes traffic to EU servers
 
+## Optional: Add Claude Code Skills
+
+Claude Code supports custom **skills** (slash commands and integrations). You can copy useful skills from the skills repository:
+
+```bash
+# Clone the skills repo
+git clone https://github.com/jvanengers/skills.git ~/projects/skills
+
+# Copy desired skills to your Claude Code config
+# Each skill goes in: ~/.claude/skills/
+
+# Example: Copy a skill
+cp -r ~/projects/skills/my-skill ~/.claude/skills/
+```
+
+Common skills for Woolsocks team:
+- `jira` - Jira ticket management
+- `slack-messaging` - Slack integration
+- `zendesk` - Customer support integration
+- `confluence-woolsocks` - Confluence documentation
+
+Skills are optional — the proxy works fine without them.
+
+---
+
 ## That's it! 🚀
 
 Every time you use `claude-eu`:
@@ -112,6 +137,7 @@ Every time you use `claude-eu`:
 2. ✅ PII is automatically redacted before Claude sees it
 3. ✅ Your statusline shows real-time costs
 4. ✅ Works exactly like normal Claude Code
+5. ✅ Optional: Use custom skills for integrations
 
 ## Questions?
 

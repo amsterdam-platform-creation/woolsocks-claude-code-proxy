@@ -146,6 +146,7 @@ If billing is not enabled, you'll get an error when trying to use Claude.
 
 ## Summary Checklist
 
+**Required:**
 - [ ] **Claude Code CLI** installed (`claude --version` works)
 - [ ] Node.js 20+
 - [ ] gcloud CLI installed
@@ -156,6 +157,41 @@ If billing is not enabled, you'll get an error when trying to use Claude.
 - [ ] Claude model enabled in Model Garden (europe-west1 region)
 - [ ] "Vertex AI User" role assigned to your account
 - [ ] Authenticated with `gcloud auth application-default login`
+
+**Optional:**
+- [ ] Skills from [jvanengers/skills](https://github.com/jvanengers/skills) repo (for integrations like Jira, Slack, Zendesk)
+
+---
+
+## Optional: Claude Code Skills
+
+**Skills** are custom integrations that add slash commands to Claude Code (e.g., `/jira`, `/slack`, `/zendesk`).
+
+Available skills are in the [jvanengers/skills](https://github.com/jvanengers/skills) repository.
+
+### Setup
+
+```bash
+# 1. Clone the skills repo
+git clone https://github.com/jvanengers/skills.git ~/projects/skills
+
+# 2. Copy desired skills to Claude Code
+mkdir -p ~/.claude/skills
+cp -r ~/projects/skills/jira ~/.claude/skills/
+cp -r ~/projects/skills/slack-messaging ~/.claude/skills/
+# ... repeat for other skills you want
+```
+
+### Common Skills for Woolsocks
+
+- `jira` - Create and manage Jira tickets
+- `slack-messaging` - Send and read Slack messages
+- `zendesk` - Manage customer support tickets
+- `confluence-woolsocks` - Create documentation
+- `sentry` - Monitor errors and performance
+- `lokalise` - Manage translations
+
+**Note:** Skills are optional. The proxy works perfectly fine without them.
 
 ---
 
