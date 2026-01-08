@@ -1,0 +1,25 @@
+{
+  "name": "claude-eu-proxy",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "node test/test-pii.js",
+    "start": "node src/index.js",
+    "test:pii": "node test/test-pii.js",
+    "test:proxy": "node test/test-proxy.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/vertex-sdk": "^0.14.0",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "sharp": "^0.34.5"
+  }
+}
