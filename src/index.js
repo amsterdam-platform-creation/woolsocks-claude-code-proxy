@@ -1,9 +1,9 @@
 // src/index.js - Claude EU Proxy main entry
+// Routes Claude Code traffic through Vertex AI (EU) with PII pseudonymization
 import 'dotenv/config';
 import express from 'express';
 import { PIIPseudonymizer } from './pii.js';
 import { sendMessage, streamMessage } from './vertex.js';
-import { redactImagePII } from './images.js';
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
@@ -51,13 +51,11 @@ app.post('/v1/messages', async (req, res) => {
   const pseudonymizer = new PIIPseudonymizer();
 
   try {
-    // 1. Process messages (pseudonymize text, redact images)
-    const processedMessages = await Promise.all(
-      req.body.messages.map(async (msg) => ({
-        ...msg,
-        content: await processMessageContent(msg.content, pseudonymizer)
-      }))
-    );
+    // 1. Process messages (pseudonymize text)
+    const processedMessages = req.body.messages.map((msg) => ({
+      ...msg,
+      content: processMessageContent(msg.content, pseudonymizer)
+    }));
 
     // Log what was redacted
     const stats = pseudonymizer.getStats();
@@ -95,28 +93,54 @@ app.post('/v1/messages', async (req, res) => {
   }
 });
 
-// Process message content (text and images)
-async function processMessageContent(content, pseudonymizer) {
+// Process message content (pseudonymize text)
+function processMessageContent(content, pseudonymizer) {
   if (typeof content === 'string') {
-    return pseudonymizer.pseudonymize(content);
+    const result = pseudonymizer.pseudonymize(content);
+    if (result !== content) {
+      console.log(`[PII] Text redacted: "${content.substring(0, 80)}..." → "${result.substring(0, 80)}..."`);
+    }
+    return result;
   }
 
   if (Array.isArray(content)) {
-    return Promise.all(content.map(async (block) => {
+    return content.map((block) => {
       if (block.type === 'text') {
-        return { ...block, text: pseudonymizer.pseudonymize(block.text) };
+        const original = block.text;
+        const redacted = pseudonymizer.pseudonymize(block.text);
+        if (original !== redacted) {
+          console.log(`[PII] Block text redacted: "${original.substring(0, 80)}..." → "${redacted.substring(0, 80)}..."`);
+        }
+        return { ...block, text: redacted };
       }
-      if (block.type === 'image' && block.source?.type === 'base64') {
-        try {
-          const redactedData = await redactImagePII(block.source.data, block.source.media_type);
-          return { ...block, source: { ...block.source, data: redactedData } };
-        } catch (err) {
-          console.warn('[Images] OCR failed, passing through:', err.message);
-          return block; // Graceful degradation - pass through if OCR fails
+      // Handle tool_result blocks (may contain text)
+      if (block.type === 'tool_result') {
+        if (typeof block.content === 'string') {
+          const original = block.content;
+          const redacted = pseudonymizer.pseudonymize(block.content);
+          if (original !== redacted) {
+            console.log(`[PII] Tool result redacted: "${original.substring(0, 80)}..." → "${redacted.substring(0, 80)}..."`);
+          }
+          return { ...block, content: redacted };
+        }
+        // Handle array content in tool_result
+        if (Array.isArray(block.content)) {
+          const redactedContent = block.content.map(item => {
+            if (item.type === 'text' && item.text) {
+              const original = item.text;
+              const redacted = pseudonymizer.pseudonymize(item.text);
+              if (original !== redacted) {
+                console.log(`[PII] Tool result array redacted: "${original.substring(0, 80)}..." → "${redacted.substring(0, 80)}..."`);
+              }
+              return { ...item, text: redacted };
+            }
+            return item;
+          });
+          return { ...block, content: redactedContent };
         }
       }
       return block;
-    }));
+    });
   }
 
   return content;
