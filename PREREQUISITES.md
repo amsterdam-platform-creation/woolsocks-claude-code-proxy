@@ -2,6 +2,8 @@
 
 ## System Requirements
 
+- **Claude Code CLI** (installed via `npm install -g @anthropic-ai/claude-code` or `brew install claude-code`)
+  - Check: `which claude` or `claude --version`
 - **Node.js 20+** (`node --version`)
 - **Google Cloud SDK** (gcloud CLI)
 - **jq** (for JSON parsing in statusline)
@@ -11,11 +13,21 @@
 ### Check What You Have
 
 ```bash
+claude --version     # Should show Claude Code version
 node --version       # Should be v20.0.0+
 gcloud --version     # Should be installed
 which jq             # If not found: brew install jq (macOS) or apt install jq (Linux)
 which curl           # Usually pre-installed
 which lsof           # Usually pre-installed
+```
+
+**Don't have Claude Code?** Install it:
+```bash
+# Via npm
+npm install -g @anthropic-ai/claude-code
+
+# Or via Homebrew (macOS)
+brew install claude-code
 ```
 
 ---
@@ -134,6 +146,7 @@ If billing is not enabled, you'll get an error when trying to use Claude.
 
 ## Summary Checklist
 
+- [ ] **Claude Code CLI** installed (`claude --version` works)
 - [ ] Node.js 20+
 - [ ] gcloud CLI installed
 - [ ] jq installed
