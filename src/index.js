@@ -5,6 +5,7 @@ import express from 'express';
 import { PIIPseudonymizer } from './pii.js';
 import { sendMessage, streamMessage } from './vertex.js';
 import { recordToolUse, isOverLimit, getLimit, getStats } from './rate-limiter.js';
+import { recordUsage, getSessionCosts, getPricingTable } from './cost-tracker.js';
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
@@ -48,6 +49,12 @@ app.get('/health', (req, res) => res.json({ status: 'ok', region: process.env.VE
 
 // Rate limit stats
 app.get('/stats', (req, res) => res.json({ toolUsage: getStats() }));
+
+// Cost tracking endpoint - Vertex AI europe-west1 pricing
+app.get('/costs', (req, res) => res.json(getSessionCosts()));
+
+// Pricing table
+app.get('/pricing', (req, res) => res.json(getPricingTable()));
 
 // Main proxy endpoint - matches Anthropic API
 app.post('/v1/messages', async (req, res) => {
@@ -101,7 +108,10 @@ app.post('/v1/messages', async (req, res) => {
     // 5. Record any tool uses in response (for rate limiting)
     recordToolUsesFromResponse(response);
 
-    // 6. De-pseudonymize response
+    // 6. Record usage and calculate cost
+    recordUsage(response, vertexModel);
+
+    // 7. De-pseudonymize response
     const cleanResponse = depseudonymizeResponse(response, pseudonymizer);
 
     console.log(`[Proxy] Request completed in ${Date.now() - startTime}ms`);
@@ -220,6 +230,9 @@ async function handleStreaming(req, res, messages, pseudonymizer, vertexModel) {
 
     // Record tool uses from streamed response
     recordToolUsesFromResponse(message);
+
+    // Record usage and calculate cost for streaming
+    recordUsage(message, vertexModel);
 
     res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
     res.end();
