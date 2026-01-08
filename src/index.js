@@ -4,6 +4,7 @@ import 'dotenv/config';
 import express from 'express';
 import { PIIPseudonymizer } from './pii.js';
 import { sendMessage, streamMessage } from './vertex.js';
+import { recordToolUse, isOverLimit, getLimit, getStats } from './rate-limiter.js';
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
@@ -45,12 +46,31 @@ function translateModel(model) {
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', region: process.env.VERTEX_REGION }));
 
+// Rate limit stats
+app.get('/stats', (req, res) => res.json({ toolUsage: getStats() }));
+
 // Main proxy endpoint - matches Anthropic API
 app.post('/v1/messages', async (req, res) => {
   const startTime = Date.now();
   const pseudonymizer = new PIIPseudonymizer();
 
   try {
+    // 0. Check rate limits for tools used in conversation
+    const toolsOverLimit = findToolsOverLimit(req.body.messages);
+    if (toolsOverLimit.length > 0) {
+      const tool = toolsOverLimit[0];
+      const limit = getLimit(tool);
+      console.log(`[RateLimit] Blocking request - ${tool} over limit (${limit} calls)`);
+      return res.status(429).json({
+        type: 'error',
+        error: {
+          type: 'rate_limit_exceeded',
+          message: `Tool "${tool}" has reached its session limit of ${limit} calls. ` +
+                   `This limit exists for cost control. Restart the proxy to reset limits.`
+        }
+      });
+    }
+
     // 1. Process messages (pseudonymize text)
     const processedMessages = req.body.messages.map((msg) => ({
       ...msg,
@@ -78,7 +98,10 @@ app.post('/v1/messages', async (req, res) => {
       messages: processedMessages,
     });
 
-    // 4. De-pseudonymize response
+    // 5. Record any tool uses in response (for rate limiting)
+    recordToolUsesFromResponse(response);
+
+    // 6. De-pseudonymize response
     const cleanResponse = depseudonymizeResponse(response, pseudonymizer);
 
     console.log(`[Proxy] Request completed in ${Date.now() - startTime}ms`);
@@ -195,6 +218,9 @@ async function handleStreaming(req, res, messages, pseudonymizer, vertexModel) {
       })}\n\n`);
     }
 
+    // Record tool uses from streamed response
+    recordToolUsesFromResponse(message);
+
     res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
     res.end();
   });
@@ -230,6 +256,34 @@ function flushBuffer(buffer, pseudonymizer) {
   };
 }
 
+// Find tools in conversation that are over their rate limit
+function findToolsOverLimit(messages) {
+  const toolsSeen = new Set();
+
+  for (const msg of messages || []) {
+    if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (block.type === 'tool_use' && block.name) {
+          toolsSeen.add(block.name);
+        }
+      }
+    }
+  }
+
+  return Array.from(toolsSeen).filter(tool => isOverLimit(tool));
+}
+
+// Record tool uses from Claude's response
+function recordToolUsesFromResponse(response) {
+  if (!response?.content) return;
+
+  for (const block of response.content) {
+    if (block.type === 'tool_use' && block.name) {
+      recordToolUse(block.name);
+    }
+  }
+}
+
 // Start server
 const PORT = process.env.PORT || 3030;
 app.listen(PORT, () => {
@@ -237,4 +291,5 @@ app.listen(PORT, () => {
   console.log(`[Proxy] Region: ${process.env.VERTEX_REGION || 'europe-west1'}`);
   console.log(`[Proxy] Project: ${process.env.GCP_PROJECT_ID || 'woolsocks-marketing-ai'}`);
   console.log(`[Proxy] Set: export ANTHROPIC_BASE_URL=http://localhost:${PORT}`);
+  console.log(`[Proxy] Rate limits active:`, getStats() || 'none yet');
 });

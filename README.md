@@ -6,6 +6,7 @@ GDPR-compliant proxy for Claude Code. Routes all traffic through Vertex AI (EU) 
 
 - 🇪🇺 **EU data residency** - All requests go through Vertex AI `europe-west1` (Belgium)
 - 🔒 **PII pseudonymization** - Emails, phones, BSN, IBAN, postcodes automatically redacted
+- 💰 **Rate limiting** - Per-tool invocation limits to control API costs
 - ⚡ **Streaming support** - Full support for streaming responses
 - 🔄 **Transparent** - Works exactly like the regular Claude Code, just safer
 
@@ -167,6 +168,28 @@ Claude Code → Local Proxy (localhost:3030) → PII Pseudonymization → Vertex
 5. **De-pseudonymize** - Proxy replaces tokens with original values
 6. **Return to user** - You see the response with real data, but Claude never saw it
 
+## Rate Limiting
+
+The proxy limits how many times each MCP tool can be invoked per session (proxy lifetime) to control API costs.
+
+| Tool | Limit | Notes |
+|------|-------|-------|
+| `zendesk` | 50 calls | Customer data |
+| `jira` | 100 calls | Higher volume, less sensitive |
+| `slack-messaging` | 50 calls | Conversation batches |
+| `sentry` | 30 calls | Error batches |
+| Default | 50 calls | All other tools |
+
+**When a limit is reached:**
+- Proxy returns a 429 error with a clear message
+- Restart the proxy to reset all limits
+
+**Check current usage:**
+```bash
+curl http://localhost:3030/stats
+# {"toolUsage":{"zendesk":5,"jira":12}}
+```
+
 ## Testing
 
 ```bash
@@ -180,13 +203,14 @@ npm run test:proxy # End-to-end proxy test (requires proxy running)
 ```
 claude-eu-proxy/
 ├── src/
-│   ├── index.js      # Express proxy server
-│   ├── pii.js        # PII detection and pseudonymization
-│   └── vertex.js     # Vertex AI SDK client
+│   ├── index.js       # Express proxy server
+│   ├── pii.js         # PII detection and pseudonymization
+│   ├── rate-limiter.js # Per-tool rate limiting
+│   └── vertex.js      # Vertex AI SDK client
 ├── test/
-│   ├── test-pii.js   # PII pattern tests
-│   └── test-proxy.js # E2E proxy tests
-├── .env              # Configuration
+│   ├── test-pii.js    # PII pattern tests
+│   └── test-proxy.js  # E2E proxy tests
+├── .env               # Configuration
 └── package.json
 ```
 
