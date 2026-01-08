@@ -10,7 +10,8 @@
     "test": "node test/test-pii.js",
     "start": "node src/index.js",
     "test:pii": "node test/test-pii.js",
-    "test:proxy": "node test/test-proxy.js"
+    "test:proxy": "node test/test-proxy.js",
+    "setup": "bash setup-statusline.sh"
   },
   "keywords": [],
   "author": "",
