@@ -141,16 +141,56 @@ VERTEX_REGION=europe-west1             # EU region for Claude
 
 ## PII Patterns Detected
 
+Supports all Woolsocks markets (NL, DE, BE, FR, IT, ES, IE) plus UK.
+
+### Universal Patterns
+
 | Type | Example | Token |
 |------|---------|-------|
 | Email | john@example.com | `EMAIL_1` |
-| Dutch mobile | 06-12345678 | `PHONE_NL_1` |
-| Dutch landline | 020-1234567 | `PHONE_NL_2` |
-| BSN | 123456789 | `BSN_1` |
 | IBAN | NL91ABNA0417164300 | `IBAN_1` |
-| Postcode | 1234 AB | `POSTCODE_NL_1` |
 
-**Not redacted:** UUIDs (e.g., `a2fd77a3-db1a-40eb-bf39-2c98cf364a89`) - these are pseudonymous identifiers that are not directly identifying without a lookup database.
+### Phone Numbers (by country)
+
+| Country | Type | Example | Token |
+|---------|------|---------|-------|
+| NL | Mobile/Landline | 06-12345678, +31 6 1234 5678 | `PHONE_NL_1` |
+| DE | Mobile/Landline | +49 170 1234567 | `PHONE_DE_1` |
+| FR | Mobile/Landline | +33 6 12 34 56 78 | `PHONE_FR_1` |
+| BE | Mobile/Landline | +32 470 12 34 56 | `PHONE_BE_1` |
+| IT | Mobile | +39 333 1234567 | `PHONE_IT_1` |
+| ES | Mobile | +34 612 345 678 | `PHONE_ES_1` |
+| IE | Mobile | +353 87 123 4567 | `PHONE_IE_1` |
+| UK | Mobile | +44 7911 123456 | `PHONE_UK_1` |
+
+### National IDs (by country)
+
+| Country | Type | Example | Token |
+|---------|------|---------|-------|
+| NL | BSN | 123456789, 123.456.789 | `BSN_1` |
+| DE | Steuer-ID | 12345678901 | `STEUER_ID_1` |
+| FR | NIR (INSEE) | 1 85 01 75 123 456 78 | `NIR_1` |
+| BE | Rijksregisternummer | 85.01.01-123.45 | `RRN_1` |
+| IT | Codice Fiscale | RSSMRA85A01H501Z | `CODICE_FISCALE_1` |
+| ES | NIF | 12345678Z | `NIF_1` |
+| ES | NIE | X1234567L | `NIE_1` |
+| IE | PPS Number | 1234567FA | `PPS_1` |
+| UK | NIN | AB123456C | `UK_NIN_1` |
+
+### Postcodes (by country)
+
+| Country | Format | Example | Token |
+|---------|--------|---------|-------|
+| NL | 4 digits + 2 letters | 1234 AB | `POSTCODE_NL_1` |
+| UK | Alphanumeric | SW1A 1AA | `POSTCODE_UK_1` |
+| IE | Eircode | D02 AF30 | `POSTCODE_IE_1` |
+
+> **Note:** DE/FR/IT/ES/BE use 4-5 digit postcodes which have high false positive risk (match years, prices). We detect their more specific national IDs instead.
+
+### Not Redacted
+
+- **UUIDs** (e.g., `a2fd77a3-db1a-40eb-bf39-2c98cf364a89`) - these are pseudonymous identifiers that are not directly identifying without a lookup database
+- **Names** - Too many false positives; rely on other PII removal
 
 ## How It Works
 
