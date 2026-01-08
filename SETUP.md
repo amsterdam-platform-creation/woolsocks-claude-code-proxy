@@ -2,6 +2,8 @@
 
 Complete 5-minute setup for GDPR-compliant Claude Code with cost tracking.
 
+> **Prerequisites:** See [PREREQUISITES.md](./PREREQUISITES.md) to check you have Node.js 20+, gcloud CLI, GCP project with Vertex AI enabled, and IAM role. Takes ~15 minutes to set up if first time with GCP.
+
 ## 1️⃣ Clone the Project
 
 ```bash
