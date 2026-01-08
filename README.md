@@ -69,11 +69,66 @@ The function automatically:
 ## Requirements
 
 - **Node.js 20+**
-- **Google Cloud auth:**
-  ```bash
-  gcloud auth application-default login
-  ```
 - **macOS** (for Apple Vision OCR)
+- **Google Cloud** - see permissions below
+
+### Google Cloud Setup
+
+#### 1. Enable Vertex AI API
+
+```bash
+gcloud services enable aiplatform.googleapis.com --project=YOUR_PROJECT_ID
+```
+
+#### 2. Enable Claude in Model Garden
+
+1. Go to [Vertex AI Model Garden](https://console.cloud.google.com/vertex-ai/model-garden)
+2. Search for "Claude"
+3. Select the model (e.g., Claude Sonnet 4)
+4. Click **Enable** and accept terms
+5. Select region: `europe-west1` (Belgium)
+
+#### 3. Authentication (choose one)
+
+**Option A: User credentials (for local development)**
+```bash
+gcloud auth application-default login
+```
+
+Your user account needs the `Vertex AI User` role:
+```bash
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="user:your-email@example.com" \
+  --role="roles/aiplatform.user"
+```
+
+**Option B: Service account (for production/CI)**
+```bash
+# Create service account
+gcloud iam service-accounts create claude-proxy \
+  --display-name="Claude EU Proxy" \
+  --project=YOUR_PROJECT_ID
+
+# Grant Vertex AI access
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+  --member="serviceAccount:claude-proxy@YOUR_PROJECT_ID.iam.gserviceaccount.com" \
+  --role="roles/aiplatform.user"
+
+# Create and download key
+gcloud iam service-accounts keys create key.json \
+  --iam-account=claude-proxy@YOUR_PROJECT_ID.iam.gserviceaccount.com
+
+# Set environment variable
+export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
+```
+
+#### Required IAM Role
+
+| Role | Purpose |
+|------|---------|
+| `roles/aiplatform.user` | Call Vertex AI models (including Claude) |
+
+> **Note:** This is the minimum required role. It allows calling models but not managing infrastructure.
 
 ## Configuration
 
