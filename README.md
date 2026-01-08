@@ -208,6 +208,79 @@ Claude Code → Local Proxy (localhost:3030) → PII Pseudonymization → Vertex
 5. **De-pseudonymize** - Proxy replaces tokens with original values
 6. **Return to user** - You see the response with real data, but Claude never saw it
 
+## Cost Tracking
+
+The proxy tracks Vertex AI costs in real-time, both per-session and per-month.
+
+**Check current costs:**
+```bash
+curl http://localhost:3030/costs
+```
+
+Response:
+```json
+{
+  "formattedCost": "$0.4521",
+  "requests": 12,
+  "session": {
+    "durationMinutes": 45.2,
+    "costPerMinute": 0.01
+  },
+  "monthly": {
+    "month": "Jan",
+    "formattedCost": "$23.45",
+    "requests": 156
+  }
+}
+```
+
+**Pricing:** Uses Vertex AI `europe-west1` rates (10% regional premium).
+
+| Model | Input/1M | Output/1M |
+|-------|----------|-----------|
+| Opus 4.5 | $5.50 | $27.50 |
+| Sonnet 4 | $3.30 | $16.50 |
+| Haiku 3.5 | $1.10 | $5.50 |
+
+**Statusline integration:** See the [Statusline Setup](#statusline-setup) section for displaying costs in Claude Code.
+
+## Statusline Setup
+
+Display real-time costs in your Claude Code statusline:
+
+1. **Create statusline script** at `~/.claude/statusline.sh`:
+   ```bash
+   #!/bin/bash
+   COSTS=$(curl -s http://localhost:3030/costs 2>/dev/null)
+   if [ -z "$COSTS" ]; then
+     echo "🔌 Proxy offline"
+     exit 0
+   fi
+
+   COST=$(echo "$COSTS" | jq -r '.formattedCost')
+   MONTHLY=$(echo "$COSTS" | jq -r '.monthly.formattedCost')
+   MONTH=$(echo "$COSTS" | jq -r '.monthly.month')
+
+   echo "💰 ${COST} | 📅 ${MONTHLY} ${MONTH}"
+   ```
+
+2. **Make executable:**
+   ```bash
+   chmod +x ~/.claude/statusline.sh
+   ```
+
+3. **Configure Claude Code** in `~/.claude/settings.json`:
+   ```json
+   {
+     "statusLine": {
+       "type": "command",
+       "command": "~/.claude/statusline.sh"
+     }
+   }
+   ```
+
+4. **Restart Claude Code** to see costs in your statusline.
+
 ## Rate Limiting
 
 The proxy limits how many times each MCP tool can be invoked per session (proxy lifetime) to control API costs.
@@ -243,14 +316,16 @@ npm run test:proxy # End-to-end proxy test (requires proxy running)
 ```
 claude-eu-proxy/
 ├── src/
-│   ├── index.js       # Express proxy server
-│   ├── pii.js         # PII detection and pseudonymization
+│   ├── index.js        # Express proxy server
+│   ├── pii.js          # PII detection and pseudonymization
+│   ├── cost-tracker.js # Cost tracking with persistent monthly storage
 │   ├── rate-limiter.js # Per-tool rate limiting
-│   └── vertex.js      # Vertex AI SDK client
+│   └── vertex.js       # Vertex AI SDK client
 ├── test/
-│   ├── test-pii.js    # PII pattern tests
-│   └── test-proxy.js  # E2E proxy tests
-├── .env               # Configuration
+│   ├── test-pii.js     # PII pattern tests
+│   └── test-proxy.js   # E2E proxy tests
+├── costs-history.json  # Persistent cost data (gitignored)
+├── .env                # Configuration
 └── package.json
 ```
 
