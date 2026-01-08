@@ -8,6 +8,40 @@ import { redactImagePII } from './images.js';
 const app = express();
 app.use(express.json({ limit: '50mb' }));
 
+// Model name translation: Anthropic API → Vertex AI
+// Claude Code sends model names with dashes, Vertex AI uses @ for version
+const MODEL_MAP = {
+  // Opus 4.5 (enabled in Model Garden)
+  'claude-opus-4-5-20251101': 'claude-opus-4-5@20251101',
+  'claude-opus-4-5': 'claude-opus-4-5',
+  // Sonnet 4
+  'claude-sonnet-4-20250514': 'claude-sonnet-4@20250514',
+  'claude-sonnet-4': 'claude-sonnet-4',
+  // Haiku 3.5
+  'claude-3-5-haiku-20241022': 'claude-3-5-haiku@20241022',
+  'claude-3-5-haiku': 'claude-3-5-haiku',
+};
+
+// Dynamic translation: convert -YYYYMMDD to @YYYYMMDD for any model
+function translateModel(model) {
+  // First check static map
+  if (MODEL_MAP[model]) {
+    const translated = MODEL_MAP[model];
+    console.log(`[Model] Translated: ${model} → ${translated}`);
+    return translated;
+  }
+
+  // Dynamic: replace trailing -YYYYMMDD with @YYYYMMDD
+  const datePattern = /-(\d{8})$/;
+  if (datePattern.test(model)) {
+    const translated = model.replace(datePattern, '@$1');
+    console.log(`[Model] Translated: ${model} → ${translated}`);
+    return translated;
+  }
+
+  return model;
+}
+
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', region: process.env.VERTEX_REGION }));
 
@@ -31,14 +65,18 @@ app.post('/v1/messages', async (req, res) => {
       console.log(`[PII] Redacted ${stats.totalRedacted} items:`, stats.byType);
     }
 
-    // 2. Handle streaming vs non-streaming
+    // 2. Translate model name for Vertex AI
+    const vertexModel = translateModel(req.body.model);
+
+    // 3. Handle streaming vs non-streaming
     if (req.body.stream) {
-      return handleStreaming(req, res, processedMessages, pseudonymizer);
+      return handleStreaming(req, res, processedMessages, pseudonymizer, vertexModel);
     }
 
-    // 3. Non-streaming: forward to Vertex AI
+    // 4. Non-streaming: forward to Vertex AI
     const response = await sendMessage({
       ...req.body,
+      model: vertexModel,
       messages: processedMessages,
     });
 
@@ -99,12 +137,12 @@ function depseudonymizeResponse(response, pseudonymizer) {
 }
 
 // Handle streaming responses
-async function handleStreaming(req, res, messages, pseudonymizer) {
+async function handleStreaming(req, res, messages, pseudonymizer, vertexModel) {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
 
-  const stream = streamMessage({ ...req.body, messages });
+  const stream = streamMessage({ ...req.body, model: vertexModel, messages });
   let textBuffer = '';
 
   stream.on('text', (text) => {
