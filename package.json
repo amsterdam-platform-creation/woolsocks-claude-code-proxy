@@ -1,7 +1,7 @@
 {
-  "name": "claude-eu-proxy",
+  "name": "woolsocks-claude-code-proxy",
   "version": "1.0.0",
-  "description": "",
+  "description": "Local PII-protection proxy for Claude Code CLI - pseudonymizes personal data before sending to Vertex AI",
   "main": "index.js",
   "directories": {
     "test": "test"

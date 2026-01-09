@@ -1,12 +1,14 @@
-# Claude EU Proxy
+# Woolsocks Claude Code Proxy
 
-GDPR-compliant proxy for Claude Code. Routes all traffic through Vertex AI (EU) with PII redaction.
+**Local** GDPR-compliant proxy for Claude Code CLI. Routes traffic through Vertex AI (EU) with PII redaction.
+
+> **Note:** This is the **local proxy** for your laptop/development machine. For cloud-deployed tools (issuebot, automations), see [Woolsocks Cloud AI Proxy](https://woolsocks-ai-proxy-y3hxwy2b7q-ew.a.run.app).
 
 ## Features
 
 - 🇪🇺 **EU data residency** - All requests go through Vertex AI `europe-west1` (Belgium)
 - 🔒 **PII pseudonymization** - Emails, phones, BSN, IBAN, postcodes automatically redacted
-- 💰 **Rate limiting** - Per-tool invocation limits to control API costs
+- 💰 **Cost tracking** - Real-time cost tracking with statusline integration
 - ⚡ **Streaming support** - Full support for streaming responses
 - 🔄 **Transparent** - Works exactly like the regular Claude Code, just safer
 
@@ -314,7 +316,7 @@ npm run test:proxy # End-to-end proxy test (requires proxy running)
 ## Architecture
 
 ```
-claude-eu-proxy/
+woolsocks-claude-code-proxy/
 ├── src/
 │   ├── index.js        # Express proxy server
 │   ├── pii.js          # PII detection and pseudonymization
@@ -328,6 +330,13 @@ claude-eu-proxy/
 ├── .env                # Configuration
 └── package.json
 ```
+
+## Related
+
+| Proxy | Location | Purpose |
+|-------|----------|---------|
+| **This proxy** | Your laptop | PII protection for Claude Code CLI |
+| [Woolsocks Cloud AI Proxy](https://github.com/woolsocks/woolsocks-ai-proxy) | Cloud Run | PII protection for issuebot, automations |
 
 ## GDPR Compliance
 

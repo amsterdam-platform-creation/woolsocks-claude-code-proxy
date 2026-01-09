@@ -2,10 +2,44 @@
 // Routes Claude Code traffic through Vertex AI (EU) with PII pseudonymization
 import 'dotenv/config';
 import express from 'express';
+import { execSync } from 'child_process';
 import { PIIPseudonymizer } from './pii.js';
 import { sendMessage, streamMessage } from './vertex.js';
 import { recordToolUse, isOverLimit, getLimit, getStats } from './rate-limiter.js';
-import { recordUsage, getSessionCosts, getPricingTable } from './cost-tracker.js';
+import {
+  recordUsage, getSessionCosts, getPricingTable,
+  estimateCost, isExpensiveAllowed, allowExpensiveRequest, resetExpensiveFlag, COST_THRESHOLD
+} from './cost-tracker.js';
+
+/**
+ * Show macOS dialog for expensive request approval
+ * Returns true if user clicks "Continue", false if "Block"
+ */
+async function promptExpensiveRequest(estimate) {
+  const message = [
+    `Estimated cost: $${estimate.totalEstimate.toFixed(2)}`,
+    `Threshold: $${estimate.threshold.toFixed(2)}`,
+    ``,
+    `Input: ~${estimate.estimatedInputTokens.toLocaleString()} tokens ($${estimate.inputCost.toFixed(3)})`,
+    `Output: ~${estimate.estimatedOutputTokens.toLocaleString()} tokens ($${estimate.outputCost.toFixed(3)})`,
+    `Model: ${estimate.model}`,
+  ].join('\\n');
+
+  const script = `
+    display dialog "${message}" ` +
+    `with title "⚠️ Expensive Request" ` +
+    `buttons {"Block", "Continue"} ` +
+    `default button "Continue" ` +
+    `with icon caution`;
+
+  try {
+    const result = execSync(`osascript -e '${script}'`, { encoding: 'utf-8', timeout: 60000 });
+    return result.includes('Continue');
+  } catch (err) {
+    // User clicked "Block" or closed dialog
+    return false;
+  }
+}
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
@@ -56,13 +90,29 @@ app.get('/costs', (req, res) => res.json(getSessionCosts()));
 // Pricing table
 app.get('/pricing', (req, res) => res.json(getPricingTable()));
 
+// Allow next expensive request (one-time approval)
+app.post('/allow-expensive', (req, res) => {
+  allowExpensiveRequest();
+  res.json({
+    status: 'approved',
+    message: `Next request exceeding $${COST_THRESHOLD.toFixed(2)} will be allowed (one-time).`,
+    threshold: COST_THRESHOLD,
+  });
+});
+
+// Check current threshold setting
+app.get('/threshold', (req, res) => res.json({
+  threshold: COST_THRESHOLD,
+  expensiveAllowed: isExpensiveAllowed(),
+}));
+
 // Main proxy endpoint - matches Anthropic API
 app.post('/v1/messages', async (req, res) => {
   const startTime = Date.now();
   const pseudonymizer = new PIIPseudonymizer();
 
   try {
-    // 0. Check rate limits for tools used in conversation
+    // 0a. Check rate limits for tools used in conversation
     const toolsOverLimit = findToolsOverLimit(req.body.messages);
     if (toolsOverLimit.length > 0) {
       const tool = toolsOverLimit[0];
@@ -77,6 +127,30 @@ app.post('/v1/messages', async (req, res) => {
         }
       });
     }
+
+    // 0b. Check estimated cost - prompt user for expensive requests
+    const estimate = estimateCost(req.body);
+    if (estimate.exceedsThreshold && !isExpensiveAllowed()) {
+      console.log(`[Cost] Expensive request detected - estimated $${estimate.totalEstimate.toFixed(2)} > $${COST_THRESHOLD.toFixed(2)}`);
+
+      // Show interactive dialog and wait for user response
+      const approved = await promptExpensiveRequest(estimate);
+
+      if (!approved) {
+        console.log(`[Cost] User rejected expensive request`);
+        return res.status(402).json({
+          type: 'error',
+          error: {
+            type: 'cost_threshold_exceeded',
+            message: `Request blocked by user (estimated cost: $${estimate.totalEstimate.toFixed(2)})`
+          }
+        });
+      }
+      console.log(`[Cost] User approved expensive request`);
+    }
+
+    // Reset expensive flag if it was used
+    resetExpensiveFlag();
 
     // 1. Process messages (pseudonymize text)
     const processedMessages = req.body.messages.map((msg) => ({

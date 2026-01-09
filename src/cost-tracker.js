@@ -18,13 +18,101 @@ const VERTEX_EU_PRICING = {
   'claude-sonnet-4': { input: 3.30, output: 16.50, cacheWrite: 4.125, cacheRead: 0.33 },
   'claude-sonnet-4@20250514': { input: 3.30, output: 16.50, cacheWrite: 4.125, cacheRead: 0.33 },
 
-  // Claude Haiku 3.5 (europe-west1 regional pricing)
+  // Claude Haiku 4.5 (europe-west1 regional pricing) - NEW MODEL
+  'claude-haiku-4-5': { input: 1.10, output: 5.50, cacheWrite: 1.375, cacheRead: 0.11 },
+  'claude-haiku-4-5@20251001': { input: 1.10, output: 5.50, cacheWrite: 1.375, cacheRead: 0.11 },
+
+  // Claude Haiku 3.5 (europe-west1 regional pricing) - LEGACY
   'claude-3-5-haiku': { input: 1.10, output: 5.50, cacheWrite: 1.375, cacheRead: 0.11 },
   'claude-3-5-haiku@20241022': { input: 1.10, output: 5.50, cacheWrite: 1.375, cacheRead: 0.11 },
 };
 
 // Default fallback (Opus pricing)
 const DEFAULT_PRICING = { input: 5.50, output: 27.50, cacheWrite: 6.875, cacheRead: 0.55 };
+
+// Cost threshold for confirmation (in USD)
+// $2 is reasonable for longer conversations with context
+export const COST_THRESHOLD = 2.00;
+
+// Flag to allow one expensive request
+let allowNextExpensive = false;
+
+/**
+ * Estimate cost before sending request (worst case: full max_tokens output)
+ * @param {object} request - The API request body
+ * @returns {object} Estimated cost breakdown
+ */
+export function estimateCost(request) {
+  const model = request.model || 'claude-opus-4-5';
+  const vertexModel = model.replace(/-(\d{8})$/, '@$1'); // Convert to Vertex format
+  const pricing = VERTEX_EU_PRICING[vertexModel] || VERTEX_EU_PRICING[model] || DEFAULT_PRICING;
+  const perMillion = 1_000_000;
+
+  // Estimate input tokens from message content (rough: ~4 chars per token)
+  let inputChars = 0;
+  if (request.system) {
+    inputChars += typeof request.system === 'string' ? request.system.length : JSON.stringify(request.system).length;
+  }
+  for (const msg of request.messages || []) {
+    if (typeof msg.content === 'string') {
+      inputChars += msg.content.length;
+    } else if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        if (block.type === 'text') inputChars += (block.text || '').length;
+        if (block.type === 'tool_result' && typeof block.content === 'string') {
+          inputChars += block.content.length;
+        }
+      }
+    }
+  }
+
+  const estimatedInputTokens = Math.ceil(inputChars / 4);
+  const maxOutputTokens = request.max_tokens || 8192;
+
+  // Use 25% of max_tokens for realistic estimate (Claude rarely maxes out)
+  const estimatedOutputTokens = Math.ceil(maxOutputTokens * 0.25);
+
+  const inputCost = estimatedInputTokens / perMillion * pricing.input;
+  const outputCost = estimatedOutputTokens / perMillion * pricing.output;
+  const totalEstimate = inputCost + outputCost;
+
+  return {
+    estimatedInputTokens,
+    estimatedOutputTokens,
+    maxOutputTokens,
+    inputCost,
+    outputCost,
+    totalEstimate,
+    model: vertexModel,
+    exceedsThreshold: totalEstimate > COST_THRESHOLD,
+    threshold: COST_THRESHOLD,
+  };
+}
+
+/**
+ * Check if expensive request is allowed
+ */
+export function isExpensiveAllowed() {
+  return allowNextExpensive;
+}
+
+/**
+ * Allow the next expensive request (one-time flag)
+ */
+export function allowExpensiveRequest() {
+  allowNextExpensive = true;
+  console.log('[Cost] Next expensive request allowed');
+}
+
+/**
+ * Reset the expensive request flag (call after request completes)
+ */
+export function resetExpensiveFlag() {
+  if (allowNextExpensive) {
+    allowNextExpensive = false;
+    console.log('[Cost] Expensive request flag reset');
+  }
+}
 
 // Load or initialize persistent cost history
 function loadCostHistory() {

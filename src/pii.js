@@ -80,13 +80,88 @@ const NATIONAL_ID_PATTERNS = {
 };
 
 // ============================================================================
+// WHITELISTED DOMAINS (service accounts - never redact)
+// These are used for API authentication and must pass through unchanged
+// ============================================================================
+
+const WHITELISTED_EMAIL_DOMAINS = [
+  'woolsocks.eu',
+  'apcreation.nl',
+  'woolsocks.com',
+  'sniptech.nl',
+];
+
+// Helper to check if email should be whitelisted
+function isWhitelistedEmail(email) {
+  const domain = email.split('@')[1]?.toLowerCase();
+  return WHITELISTED_EMAIL_DOMAINS.some(d => domain === d || domain?.endsWith('.' + d));
+}
+
+// ============================================================================
+// ZENDESK SYSTEM IDs (never redact - these are not PII)
+// Zendesk brand IDs and custom field IDs contain "PHONE_XX" patterns
+// that should NOT be treated as actual phone numbers
+// ============================================================================
+
+const ZENDESK_ID_PATTERN = /\d{1,2}PHONE_[A-Z]{2}_\d{3,}/g;
+
+function isZendeskSystemId(text) {
+  // Match Zendesk brand/field IDs like: 1PHONE_NL_1698, 12PHONE_NL_362
+  return /^\d{1,2}PHONE_[A-Z]{2}_\d{3,}$/.test(text?.trim());
+}
+
+// ============================================================================
+// TOKEN PATTERNS (protect from false positive redaction)
+// These are API tokens that might contain digit sequences matching PII patterns
+// ============================================================================
+
+const TOKEN_PATTERNS = [
+  // Slack tokens: xoxb-, xoxp-, xoxa-, xoxs-, xoxr-
+  /xox[bpars]-[\w-]+/g,
+  // Sentry tokens
+  /sntryu_[\w]+/g,
+  /sntrys_[\w]+/g,
+  // Generic API tokens (32+ hex chars)
+  /\b[a-f0-9]{32,}\b/gi,
+];
+
+// Placeholder for protected tokens
+const TOKEN_PLACEHOLDER_PREFIX = '__PROTECTED_TOKEN_';
+let tokenCounter = 0;
+const protectedTokens = new Map();
+
+// Pre-process: extract and protect tokens before PII detection
+function protectTokens(text) {
+  let result = text;
+  for (const pattern of TOKEN_PATTERNS) {
+    pattern.lastIndex = 0;
+    result = result.replace(pattern, (match) => {
+      const placeholder = `${TOKEN_PLACEHOLDER_PREFIX}${tokenCounter++}__`;
+      protectedTokens.set(placeholder, match);
+      return placeholder;
+    });
+  }
+  return result;
+}
+
+// Post-process: restore protected tokens
+function restoreTokens(text) {
+  let result = text;
+  for (const [placeholder, original] of protectedTokens) {
+    result = result.replaceAll(placeholder, original);
+  }
+  return result;
+}
+
+// ============================================================================
 // COMBINED PATTERNS ARRAY
 // Order matters: more specific patterns first to avoid conflicts
 // ============================================================================
 
 const PATTERNS = [
   // === Universal patterns ===
-  { type: 'EMAIL', regex: /[\w.-]+@[\w.-]+\.\w{2,}/gi },
+  // Email: skip whitelisted domains (service accounts for auth)
+  { type: 'EMAIL', regex: /[\w.-]+@[\w.-]+\.\w{2,}/gi, filter: isWhitelistedEmail },
   // IBAN: 2 letters (country) + 2 digits (check) + 10-30 alphanumeric (BBAN varies by country)
   // Supports both compact (DE89370400440532013000) and spaced (NL91 ABNA 0417 1643 00) formats
   { type: 'IBAN', regex: /\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4})+(?:\s?[A-Z0-9]{1,4})?\b/gi },
@@ -135,12 +210,23 @@ export class PIIPseudonymizer {
   pseudonymize(text) {
     if (!text || typeof text !== 'string') return text;
 
-    let result = text;
-    for (const { type, regex } of PATTERNS) {
+    // Step 1: Protect API tokens from false positive matching
+    let result = protectTokens(text);
+
+    // Step 2: Apply PII patterns
+    for (const { type, regex, filter } of PATTERNS) {
       // Reset regex lastIndex for global patterns
       regex.lastIndex = 0;
 
       result = result.replace(regex, (match) => {
+        // Skip Zendesk system IDs (brand/field IDs, not PII)
+        if (isZendeskSystemId(match)) {
+          return match;
+        }
+        // Skip if whitelisted (e.g., service account emails)
+        if (filter && filter(match)) {
+          return match;
+        }
         // Check if already mapped (same PII appearing twice)
         for (const [token, original] of this.mappings) {
           if (original === match) return token;
@@ -152,6 +238,10 @@ export class PIIPseudonymizer {
         return token;
       });
     }
+
+    // Step 3: Restore protected tokens
+    result = restoreTokens(result);
+
     return result;
   }
 
