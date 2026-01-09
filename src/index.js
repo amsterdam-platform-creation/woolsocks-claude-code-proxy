@@ -12,6 +12,10 @@ import {
   estimateCost, isExpensiveAllowed, allowExpensiveRequest, resetExpensiveFlag, COST_THRESHOLD
 } from './cost-tracker.js';
 import { initBigQuery, logRequest, isInitialized, formatMetadata } from './bigquery-logger.js';
+import {
+  initValidator, estimateQueryScan, isValidatorReady, getScanLimit,
+  formatValidationResponse
+} from './bigquery-validator.js';
 
 /**
  * Show macOS dialog for expensive request approval
@@ -50,6 +54,12 @@ app.use(express.json({ limit: '50mb' }));
 // If init fails, continue running but logs won't be sent
 initBigQuery().catch(err => {
   console.error('[BigQuery] Initialization failed - logging disabled:', err.message);
+});
+
+// Initialize BigQuery query validator on startup (non-blocking)
+// If init fails, continue running but query validation disabled
+initValidator().catch(err => {
+  console.error('[BigQueryValidator] Initialization failed - validation disabled:', err.message);
 });
 
 // Model name translation: Anthropic API → Vertex AI
@@ -106,6 +116,73 @@ app.post('/allow-expensive', (req, res) => {
     message: `Next request exceeding $${COST_THRESHOLD.toFixed(2)} will be allowed (one-time).`,
     threshold: COST_THRESHOLD,
   });
+});
+
+// BigQuery query validator status
+app.get('/v1/bigquery/status', (req, res) => res.json({
+  validator_ready: isValidatorReady(),
+  scan_limit_gb: getScanLimit(),
+  message: isValidatorReady()
+    ? `Query validator active - blocks queries scanning >${getScanLimit()}GB`
+    : 'Query validator not initialized - unable to check query costs'
+}));
+
+// BigQuery query validation endpoint
+// POST /v1/bigquery/validate with body: { sql: "SELECT ..." }
+app.post('/v1/bigquery/validate', async (req, res) => {
+  const requestId = randomUUID();
+  const { sql } = req.body;
+
+  if (!sql || typeof sql !== 'string') {
+    return res.status(400).json({
+      type: 'error',
+      error: {
+        type: 'invalid_request',
+        message: 'Missing or invalid "sql" field in request body'
+      }
+    });
+  }
+
+  try {
+    // Estimate query scan size
+    const validation = await estimateQueryScan(sql);
+
+    // Log validation attempt to console
+    // (BigQuery logging requires separate schema - can be added in Phase 3)
+    console.log(`[BigQueryValidator] Validation - ${validation.approved ? 'APPROVED' : 'BLOCKED'}: ${validation.estimatedGB}GB/${validation.scanLimitGB}GB`);
+
+    // If query would exceed limit, return 402 (Payment Required)
+    if (!validation.approved) {
+      console.log(`[BigQueryValidator] Query blocked: ${validation.estimatedGB}GB > ${validation.scanLimitGB}GB`);
+      return res.status(402).json({
+        type: 'error',
+        error: {
+          type: 'query_too_expensive',
+          message: validation.message,
+          request_id: requestId,
+          ...formatValidationResponse(validation)
+        }
+      });
+    }
+
+    // Query approved - return estimation details
+    console.log(`[BigQueryValidator] Query approved: ${validation.estimatedGB}GB`);
+    return res.json({
+      type: 'success',
+      request_id: requestId,
+      ...formatValidationResponse(validation)
+    });
+  } catch (err) {
+    console.error('[BigQueryValidator] Validation error:', err);
+    return res.status(500).json({
+      type: 'error',
+      error: {
+        type: 'validation_failed',
+        message: err.message,
+        request_id: requestId
+      }
+    });
+  }
 });
 
 /**
