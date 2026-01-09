@@ -19,6 +19,7 @@
   "type": "module",
   "dependencies": {
     "@anthropic-ai/vertex-sdk": "^0.14.0",
+    "@google-cloud/bigquery": "^7.9.4",
     "dotenv": "^17.2.3",
     "express": "^5.2.1"
   }

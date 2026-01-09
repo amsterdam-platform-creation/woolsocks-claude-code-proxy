@@ -3,6 +3,7 @@
 import 'dotenv/config';
 import express from 'express';
 import { execSync } from 'child_process';
+import { randomUUID } from 'crypto';
 import { PIIPseudonymizer } from './pii.js';
 import { sendMessage, streamMessage } from './vertex.js';
 import { recordToolUse, isOverLimit, getLimit, getStats } from './rate-limiter.js';
@@ -10,6 +11,7 @@ import {
   recordUsage, getSessionCosts, getPricingTable,
   estimateCost, isExpensiveAllowed, allowExpensiveRequest, resetExpensiveFlag, COST_THRESHOLD
 } from './cost-tracker.js';
+import { initBigQuery, logRequest, isInitialized, formatMetadata } from './bigquery-logger.js';
 
 /**
  * Show macOS dialog for expensive request approval
@@ -43,6 +45,12 @@ async function promptExpensiveRequest(estimate) {
 
 const app = express();
 app.use(express.json({ limit: '50mb' }));
+
+// Initialize BigQuery logging on startup (non-blocking)
+// If init fails, continue running but logs won't be sent
+initBigQuery().catch(err => {
+  console.error('[BigQuery] Initialization failed - logging disabled:', err.message);
+});
 
 // Model name translation: Anthropic API → Vertex AI
 // Claude Code sends model names with dashes, Vertex AI uses @ for version
@@ -100,6 +108,47 @@ app.post('/allow-expensive', (req, res) => {
   });
 });
 
+/**
+ * Helper: Calculate actual cost from response tokens
+ * Reuses logic from cost-tracker.js
+ */
+function calculateActualCost(response, model) {
+  // Get pricing from cost-tracker
+  // Default to Opus pricing if model not found
+  const VERTEX_EU_PRICING = {
+    'claude-opus-4-5': { input: 5.50, output: 27.50 },
+    'claude-opus-4-5@20251101': { input: 5.50, output: 27.50 },
+    'claude-sonnet-4': { input: 3.30, output: 16.50 },
+    'claude-sonnet-4@20250514': { input: 3.30, output: 16.50 },
+    'claude-haiku-4-5': { input: 1.10, output: 5.50 },
+    'claude-haiku-4-5@20251001': { input: 1.10, output: 5.50 },
+    'claude-3-5-haiku': { input: 1.10, output: 5.50 },
+    'claude-3-5-haiku@20241022': { input: 1.10, output: 5.50 },
+  };
+
+  const pricing = VERTEX_EU_PRICING[model] || { input: 5.50, output: 27.50 };
+  const inputTokens = response.usage?.input_tokens || 0;
+  const outputTokens = response.usage?.output_tokens || 0;
+
+  const inputCost = (inputTokens / 1_000_000) * pricing.input;
+  const outputCost = (outputTokens / 1_000_000) * pricing.output;
+
+  return parseFloat((inputCost + outputCost).toFixed(4));
+}
+
+/**
+ * Helper: Hash user ID for privacy
+ * Returns pseudonymized user identifier safe for analytics
+ */
+function hashUserId(userId) {
+  if (!userId || userId === 'unknown') {
+    return 'unknown';
+  }
+  // Base64 encode first 16 chars for simple pseudonymization
+  // For stronger privacy, could use crypto.createHash('sha256')
+  return `user_${Buffer.from(userId).toString('base64').substring(0, 16)}`;
+}
+
 // Check current threshold setting
 app.get('/threshold', (req, res) => res.json({
   threshold: COST_THRESHOLD,
@@ -109,7 +158,11 @@ app.get('/threshold', (req, res) => res.json({
 // Main proxy endpoint - matches Anthropic API
 app.post('/v1/messages', async (req, res) => {
   const startTime = Date.now();
+  const requestId = randomUUID();  // Generate unique request ID for tracing
   const pseudonymizer = new PIIPseudonymizer();
+
+  // Set request ID in response headers
+  res.set('X-Request-ID', requestId);
 
   try {
     // 0a. Check rate limits for tools used in conversation
@@ -169,7 +222,7 @@ app.post('/v1/messages', async (req, res) => {
 
     // 3. Handle streaming vs non-streaming
     if (req.body.stream) {
-      return handleStreaming(req, res, processedMessages, pseudonymizer, vertexModel);
+      return handleStreaming(req, res, processedMessages, pseudonymizer, vertexModel, startTime, requestId, estimate);
     }
 
     // 4. Non-streaming: forward to Vertex AI
@@ -185,10 +238,39 @@ app.post('/v1/messages', async (req, res) => {
     // 6. Record usage and calculate cost
     recordUsage(response, vertexModel);
 
-    // 7. De-pseudonymize response
+    // 7. Log to BigQuery asynchronously (non-blocking)
+    if (await isInitialized()) {
+      const actualCost = calculateActualCost(response, vertexModel);
+      const metadata = formatMetadata({
+        timestamp: new Date(),
+        request_id: requestId,
+        model: vertexModel,
+        region: 'eu',
+        messages_count: req.body.messages.length,
+        system_prompt_length: req.body.system ? JSON.stringify(req.body.system).length : 0,
+        stream: false,
+        max_tokens: req.body.max_tokens || 8192,
+        estimated_input_tokens: estimate.estimatedInputTokens,
+        estimated_output_tokens: estimate.estimatedOutputTokens,
+        estimated_cost_usd: estimate.totalEstimate,
+        actual_input_tokens: response.usage?.input_tokens || 0,
+        actual_output_tokens: response.usage?.output_tokens || 0,
+        actual_cost_usd: actualCost,
+        cost_difference: actualCost - estimate.totalEstimate,
+        response_time_ms: Date.now() - startTime,
+        user_context: hashUserId(req.get('x-user-id') || 'unknown')
+      });
+
+      // Fire-and-forget: don't await, don't block response
+      logRequest(metadata).catch(err => {
+        console.error('[BigQuery] Async log error:', err.message);
+      });
+    }
+
+    // 8. De-pseudonymize response
     const cleanResponse = depseudonymizeResponse(response, pseudonymizer);
 
-    console.log(`[Proxy] Request completed in ${Date.now() - startTime}ms`);
+    console.log(`[Proxy] ${requestId} completed in ${Date.now() - startTime}ms`);
     res.json(cleanResponse);
 
   } catch (error) {
@@ -268,7 +350,7 @@ function depseudonymizeResponse(response, pseudonymizer) {
 }
 
 // Handle streaming responses
-async function handleStreaming(req, res, messages, pseudonymizer, vertexModel) {
+async function handleStreaming(req, res, messages, pseudonymizer, vertexModel, startTime, requestId, estimate) {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -292,7 +374,7 @@ async function handleStreaming(req, res, messages, pseudonymizer, vertexModel) {
     }
   });
 
-  stream.on('message', (message) => {
+  stream.on('message', async (message) => {
     // Flush any remaining buffer
     if (textBuffer) {
       const clean = pseudonymizer.depseudonymize(textBuffer);
@@ -307,6 +389,35 @@ async function handleStreaming(req, res, messages, pseudonymizer, vertexModel) {
 
     // Record usage and calculate cost for streaming
     recordUsage(message, vertexModel);
+
+    // Log to BigQuery asynchronously (non-blocking)
+    if (await isInitialized()) {
+      const actualCost = calculateActualCost(message, vertexModel);
+      const metadata = formatMetadata({
+        timestamp: new Date(),
+        request_id: requestId,
+        model: vertexModel,
+        region: 'eu',
+        messages_count: req.body.messages.length,
+        system_prompt_length: req.body.system ? JSON.stringify(req.body.system).length : 0,
+        stream: true,
+        max_tokens: req.body.max_tokens || 8192,
+        estimated_input_tokens: estimate.estimatedInputTokens,
+        estimated_output_tokens: estimate.estimatedOutputTokens,
+        estimated_cost_usd: estimate.totalEstimate,
+        actual_input_tokens: message.usage?.input_tokens || 0,
+        actual_output_tokens: message.usage?.output_tokens || 0,
+        actual_cost_usd: actualCost,
+        cost_difference: actualCost - estimate.totalEstimate,
+        response_time_ms: Date.now() - startTime,
+        user_context: hashUserId(req.get('x-user-id') || 'unknown')
+      });
+
+      // Fire-and-forget: don't await, don't block response
+      logRequest(metadata).catch(err => {
+        console.error('[BigQuery] Async log error (streaming):', err.message);
+      });
+    }
 
     res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
     res.end();
