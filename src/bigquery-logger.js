@@ -51,6 +51,13 @@ export async function initBigQuery() {
     return;
   }
 
+  // Check if BigQuery is explicitly disabled
+  if (process.env.BIGQUERY_ENABLED === 'false') {
+    initState = 'failed';
+    console.log('[BigQuery] Logging DISABLED via BIGQUERY_ENABLED=false');
+    return;
+  }
+
   try {
     const projectId = process.env.GCP_PROJECT_ID;
     const datasetId = process.env.BIGQUERY_DATASET;

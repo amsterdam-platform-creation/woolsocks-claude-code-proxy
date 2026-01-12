@@ -9,13 +9,19 @@ import { sendMessage, streamMessage } from './vertex.js';
 import { recordToolUse, isOverLimit, getLimit, getStats } from './rate-limiter.js';
 import {
   recordUsage, getSessionCosts, getPricingTable,
-  estimateCost, isExpensiveAllowed, allowExpensiveRequest, resetExpensiveFlag, COST_THRESHOLD
+  estimateCost, isExpensiveAllowed, allowExpensiveRequest, resetExpensiveFlag, COST_THRESHOLD,
+  checkMonthlyCostLimit, getMonthlyCostLimit
 } from './cost-tracker.js';
 import { initBigQuery, logRequest, isInitialized, formatMetadata } from './bigquery-logger.js';
 import {
   initValidator, estimateQueryScan, isValidatorReady, getScanLimit,
-  formatValidationResponse
+  formatValidationResponse, getDailyBytesStatus, recordBytesScanned, getClient, getDailyLimitGB,
+  getMonthlyBytesStatus, getMonthlyLimitEUR
 } from './bigquery-validator.js';
+import {
+  initTableChecker, checkTableSizes, getMaxTableSizeGB, isTableCheckerReady,
+  getAllowedRegions, isBlockingNonEuTables
+} from './bigquery-table-checker.js';
 
 /**
  * Show macOS dialog for expensive request approval
@@ -58,7 +64,13 @@ initBigQuery().catch(err => {
 
 // Initialize BigQuery query validator on startup (non-blocking)
 // If init fails, continue running but query validation disabled
-initValidator().catch(err => {
+initValidator().then(() => {
+  // Initialize table checker using validator's BigQuery client
+  const client = getClient();
+  if (client) {
+    initTableChecker(client);
+  }
+}).catch(err => {
   console.error('[BigQueryValidator] Initialization failed - validation disabled:', err.message);
 });
 
@@ -127,6 +139,64 @@ app.get('/v1/bigquery/status', (req, res) => res.json({
     : 'Query validator not initialized - unable to check query costs'
 }));
 
+// Budget status endpoint - comprehensive view of all cost controls
+app.get('/budget', (req, res) => {
+  const monthly = checkMonthlyCostLimit();
+  const daily = getDailyBytesStatus();
+  const monthlyBQ = getMonthlyBytesStatus();
+  const session = getSessionCosts();
+
+  res.json({
+    status: monthly.exceeded ? 'BLOCKED' : 'OK',
+    monthly: {
+      claude: {
+        currentCostUSD: monthly.currentCost,
+        limitUSD: monthly.limit,
+        percentUsed: monthly.percentUsed,
+        exceeded: monthly.exceeded,
+        message: monthly.message,
+      },
+      bigquery: {
+        spentEUR: monthlyBQ.spentEUR,
+        limitEUR: monthlyBQ.limitEUR,
+        remainingEUR: monthlyBQ.remainingEUR,
+        percentUsed: monthlyBQ.percentUsed,
+        scannedGB: monthlyBQ.scannedGB,
+        scannedTB: monthlyBQ.scannedTB,
+        month: monthlyBQ.month,
+      },
+    },
+    bigquery: {
+      dailyScannedGB: daily.scannedGB,
+      dailyLimitGB: daily.limitGB,
+      dailyRemainingGB: daily.remainingGB,
+      dailyPercentUsed: daily.percentUsed,
+      perQueryLimitGB: getScanLimit(),
+      maxTableSizeGB: getMaxTableSizeGB(),
+      tableCheckerReady: isTableCheckerReady(),
+    },
+    session: {
+      costUSD: session.totalCostUSD,
+      requests: session.requests,
+      durationMinutes: session.session.durationMinutes,
+    },
+    limits: {
+      claude: {
+        monthlyCostLimitUSD: getMonthlyCostLimit(),
+        perRequestThresholdUSD: COST_THRESHOLD,
+      },
+      bigquery: {
+        monthlyLimitEUR: getMonthlyLimitEUR(),
+        dailyLimitGB: getDailyLimitGB(),
+        perQueryLimitGB: getScanLimit(),
+        maxTableSizeGB: getMaxTableSizeGB(),
+        allowedRegions: getAllowedRegions(),
+        blockNonEuTables: isBlockingNonEuTables(),
+      },
+    },
+  });
+});
+
 // BigQuery query validation endpoint
 // POST /v1/bigquery/validate with body: { sql: "SELECT ..." }
 app.post('/v1/bigquery/validate', async (req, res) => {
@@ -144,7 +214,30 @@ app.post('/v1/bigquery/validate', async (req, res) => {
   }
 
   try {
-    // Estimate query scan size
+    // 1. TABLE SIZE & REGION PRE-CHECK - Block before dry-run
+    const tableCheck = await checkTableSizes(sql);
+    if (!tableCheck.approved) {
+      console.log(`[TableChecker] Query blocked - ${tableCheck.message}`);
+
+      // Different error types for size vs region issues
+      const errorType = tableCheck.reason === 'non_eu_region' ? 'non_eu_region' : 'table_too_large';
+
+      return res.status(402).json({
+        type: 'error',
+        error: {
+          type: errorType,
+          message: tableCheck.message,
+          request_id: requestId,
+          blocked_tables: tableCheck.blockedTables,
+          non_eu_tables: tableCheck.nonEuTables,
+          tables_checked: tableCheck.tablesChecked,
+          max_table_size_gb: getMaxTableSizeGB(),
+          allowed_regions: getAllowedRegions(),
+        }
+      });
+    }
+
+    // 2. Estimate query scan size (includes daily limit check)
     const validation = await estimateQueryScan(sql);
 
     // Log validation attempt to console
@@ -242,6 +335,23 @@ app.post('/v1/messages', async (req, res) => {
   res.set('X-Request-ID', requestId);
 
   try {
+    // 0. MONTHLY COST HARD CAP - Emergency brake when budget exhausted
+    // This check runs FIRST, before any other processing
+    const monthlyCost = checkMonthlyCostLimit();
+    if (monthlyCost.exceeded) {
+      console.log(`[Cost] MONTHLY LIMIT EXCEEDED: $${monthlyCost.currentCost.toFixed(2)} / $${monthlyCost.limit}`);
+      return res.status(402).json({
+        type: 'error',
+        error: {
+          type: 'monthly_limit_exceeded',
+          message: monthlyCost.message,
+          current_cost_usd: monthlyCost.currentCost,
+          limit_usd: monthlyCost.limit,
+          percent_used: monthlyCost.percentUsed,
+        }
+      });
+    }
+
     // 0a. Check rate limits for tools used in conversation
     const toolsOverLimit = findToolsOverLimit(req.body.messages);
     if (toolsOverLimit.length > 0) {

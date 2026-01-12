@@ -34,6 +34,10 @@ const DEFAULT_PRICING = { input: 5.50, output: 27.50, cacheWrite: 6.875, cacheRe
 // $2 is reasonable for longer conversations with context
 export const COST_THRESHOLD = 2.00;
 
+// Monthly cost limit - hard cap to prevent runaway costs
+// When exceeded, ALL requests are blocked until next month or limit increase
+const MONTHLY_COST_LIMIT = parseFloat(process.env.MONTHLY_COST_LIMIT_USD || '100');
+
 // Flag to allow one expensive request
 let allowNextExpensive = false;
 
@@ -270,6 +274,37 @@ export function getMonthlyCosts() {
     requests: monthly.requests,
     byModel: monthly.byModel,
   };
+}
+
+/**
+ * Check if monthly cost limit has been exceeded
+ * This is the "emergency brake" - blocks ALL requests when budget is exhausted
+ * @returns {object} { exceeded: boolean, currentCost: number, limit: number, percentUsed: string, message: string }
+ */
+export function checkMonthlyCostLimit() {
+  const history = loadCostHistory();
+  const monthKey = getMonthKey();
+  const currentCost = history.monthly?.[monthKey]?.totalCost || 0;
+
+  const exceeded = currentCost >= MONTHLY_COST_LIMIT;
+
+  return {
+    exceeded,
+    currentCost,
+    limit: MONTHLY_COST_LIMIT,
+    percentUsed: ((currentCost / MONTHLY_COST_LIMIT) * 100).toFixed(1),
+    message: exceeded
+      ? `Monthly cost limit exceeded: $${currentCost.toFixed(2)} / $${MONTHLY_COST_LIMIT.toFixed(2)}. All requests blocked until next month or limit increase.`
+      : `Monthly spend: $${currentCost.toFixed(2)} / $${MONTHLY_COST_LIMIT.toFixed(2)} (${((currentCost / MONTHLY_COST_LIMIT) * 100).toFixed(0)}%)`,
+  };
+}
+
+/**
+ * Get the configured monthly cost limit
+ * @returns {number} Monthly limit in USD
+ */
+export function getMonthlyCostLimit() {
+  return MONTHLY_COST_LIMIT;
 }
 
 /**
