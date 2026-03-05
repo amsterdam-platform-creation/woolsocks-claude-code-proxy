@@ -10,6 +10,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const COSTS_FILE = path.join(__dirname, '..', 'costs-history.json');
 
 const VERTEX_EU_PRICING = {
+  // Claude Opus 4.6 (europe-west1 regional pricing)
+  'claude-opus-4-6': { input: 5.50, output: 27.50, cacheWrite: 6.875, cacheRead: 0.55 },
+
+  // Claude Sonnet 4.6 (europe-west1 regional pricing)
+  'claude-sonnet-4-6': { input: 3.30, output: 16.50, cacheWrite: 4.125, cacheRead: 0.33 },
+
   // Claude Opus 4.5 (europe-west1 regional pricing)
   'claude-opus-4-5': { input: 5.50, output: 27.50, cacheWrite: 6.875, cacheRead: 0.55 },
   'claude-opus-4-5@20251101': { input: 5.50, output: 27.50, cacheWrite: 6.875, cacheRead: 0.55 },
@@ -18,7 +24,7 @@ const VERTEX_EU_PRICING = {
   'claude-sonnet-4': { input: 3.30, output: 16.50, cacheWrite: 4.125, cacheRead: 0.33 },
   'claude-sonnet-4@20250514': { input: 3.30, output: 16.50, cacheWrite: 4.125, cacheRead: 0.33 },
 
-  // Claude Haiku 4.5 (europe-west1 regional pricing) - NEW MODEL
+  // Claude Haiku 4.5 (europe-west1 regional pricing)
   'claude-haiku-4-5': { input: 1.10, output: 5.50, cacheWrite: 1.375, cacheRead: 0.11 },
   'claude-haiku-4-5@20251001': { input: 1.10, output: 5.50, cacheWrite: 1.375, cacheRead: 0.11 },
 

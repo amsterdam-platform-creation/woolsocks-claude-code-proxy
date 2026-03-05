@@ -77,13 +77,20 @@ initValidator().then(() => {
 // Model name translation: Anthropic API → Vertex AI
 // Claude Code sends model names with dashes, Vertex AI uses @ for version
 const MODEL_MAP = {
-  // Opus 4.5 (enabled in Model Garden)
+  // Opus 4.6
+  'claude-opus-4-6': 'claude-opus-4-6',
+  // Sonnet 4.6
+  'claude-sonnet-4-6': 'claude-sonnet-4-6',
+  // Opus 4.5
   'claude-opus-4-5-20251101': 'claude-opus-4-5@20251101',
   'claude-opus-4-5': 'claude-opus-4-5',
   // Sonnet 4
   'claude-sonnet-4-20250514': 'claude-sonnet-4@20250514',
   'claude-sonnet-4': 'claude-sonnet-4',
-  // Haiku 3.5
+  // Haiku 4.5
+  'claude-haiku-4-5-20251001': 'claude-haiku-4-5@20251001',
+  'claude-haiku-4-5': 'claude-haiku-4-5',
+  // Haiku 3.5 (legacy)
   'claude-3-5-haiku-20241022': 'claude-3-5-haiku@20241022',
   'claude-3-5-haiku': 'claude-3-5-haiku',
 };
@@ -286,6 +293,8 @@ function calculateActualCost(response, model) {
   // Get pricing from cost-tracker
   // Default to Opus pricing if model not found
   const VERTEX_EU_PRICING = {
+    'claude-opus-4-6': { input: 5.50, output: 27.50 },
+    'claude-sonnet-4-6': { input: 3.30, output: 16.50 },
     'claude-opus-4-5': { input: 5.50, output: 27.50 },
     'claude-opus-4-5@20251101': { input: 5.50, output: 27.50 },
     'claude-sonnet-4': { input: 3.30, output: 16.50 },
@@ -407,14 +416,18 @@ app.post('/v1/messages', async (req, res) => {
     // 2. Translate model name for Vertex AI
     const vertexModel = translateModel(req.body.model);
 
+    // 2b. Strip fields not supported by Vertex AI
+    const { context_management, ...sanitizedBody } = req.body;
+
     // 3. Handle streaming vs non-streaming
-    if (req.body.stream) {
+    if (sanitizedBody.stream) {
+      req.sanitizedBody = sanitizedBody;
       return handleStreaming(req, res, processedMessages, pseudonymizer, vertexModel, startTime, requestId, estimate);
     }
 
     // 4. Non-streaming: forward to Vertex AI
     const response = await sendMessage({
-      ...req.body,
+      ...sanitizedBody,
       model: vertexModel,
       messages: processedMessages,
     });
@@ -542,7 +555,7 @@ async function handleStreaming(req, res, messages, pseudonymizer, vertexModel, s
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
 
-  const stream = streamMessage({ ...req.body, model: vertexModel, messages });
+  const stream = streamMessage({ ...(req.sanitizedBody || req.body), model: vertexModel, messages });
   let textBuffer = '';
 
   stream.on('text', (text) => {
