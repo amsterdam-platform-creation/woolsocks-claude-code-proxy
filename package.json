@@ -7,10 +7,20 @@
     "test": "test"
   },
   "scripts": {
-    "test": "node test/test-pii.js",
-    "start": "node src/index.js",
+    "test": "node test/test-pii.js && node test/test-rate-limiter.js && node test/test-cost-tracker.js && node test/test-model-translation.js && node test/test-bigquery.js && node test/test-bigquery-mocked.js && node test/test-http-endpoints.js",
+    "test:unit": "node test/test-pii.js && node test/test-rate-limiter.js && node test/test-cost-tracker.js && node test/test-model-translation.js && node test/test-bigquery.js && node test/test-bigquery-mocked.js && node test/test-http-endpoints.js",
     "test:pii": "node test/test-pii.js",
+    "test:rate-limiter": "node test/test-rate-limiter.js",
+    "test:cost-tracker": "node test/test-cost-tracker.js",
+    "test:model-translation": "node test/test-model-translation.js",
+    "test:bigquery": "node test/test-bigquery.js",
+    "test:bigquery-mocked": "node test/test-bigquery-mocked.js",
+    "test:http": "node test/test-http-endpoints.js",
     "test:proxy": "node test/test-proxy.js",
+    "test:streaming": "node test/test-streaming.js",
+    "test:integration": "node test/test-proxy.js && node test/test-streaming.js",
+    "test:all": "npm run test:unit && npm run test:integration",
+    "start": "node src/index.js",
     "setup": "bash setup-statusline.sh"
   },
   "keywords": [],

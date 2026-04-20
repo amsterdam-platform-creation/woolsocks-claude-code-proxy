@@ -93,3 +93,8 @@ export function getLimit(toolName) {
 export function getStats() {
   return Object.fromEntries(counters);
 }
+
+// Reset all counters — used in tests only
+export function resetCounters() {
+  counters.clear();
+}

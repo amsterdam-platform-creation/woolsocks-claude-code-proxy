@@ -134,7 +134,7 @@ export async function isInitialized() {
 /**
  * Determine if an error is transient (should retry)
  */
-function isTransientError(err) {
+export function isTransientError(err) {
   // Transient errors: network issues, server errors, rate limits
   if (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT' || err.code === 'ENOTFOUND') {
     return true;

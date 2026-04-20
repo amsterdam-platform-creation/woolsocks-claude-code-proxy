@@ -7,6 +7,7 @@ import { randomUUID } from 'crypto';
 import { PIIPseudonymizer } from './pii.js';
 import { sendMessage, streamMessage } from './vertex.js';
 import { recordToolUse, isOverLimit, getLimit, getStats } from './rate-limiter.js';
+import { translateModel, isModelDisabled, getDisabledModels } from './model-translator.js';
 import {
   recordUsage, getSessionCosts, getPricingTable,
   estimateCost, isExpensiveAllowed, allowExpensiveRequest, resetExpensiveFlag, COST_THRESHOLD,
@@ -74,46 +75,7 @@ initValidator().then(() => {
   console.error('[BigQueryValidator] Initialization failed - validation disabled:', err.message);
 });
 
-// Model name translation: Anthropic API → Vertex AI
-// Claude Code sends model names with dashes, Vertex AI uses @ for version
-const MODEL_MAP = {
-  // Opus 4.6
-  'claude-opus-4-6': 'claude-opus-4-6',
-  // Sonnet 4.6
-  'claude-sonnet-4-6': 'claude-sonnet-4-6',
-  // Opus 4.5
-  'claude-opus-4-5-20251101': 'claude-opus-4-5@20251101',
-  'claude-opus-4-5': 'claude-opus-4-5',
-  // Sonnet 4
-  'claude-sonnet-4-20250514': 'claude-sonnet-4@20250514',
-  'claude-sonnet-4': 'claude-sonnet-4',
-  // Haiku 4.5
-  'claude-haiku-4-5-20251001': 'claude-haiku-4-5@20251001',
-  'claude-haiku-4-5': 'claude-haiku-4-5',
-  // Haiku 3.5 (legacy)
-  'claude-3-5-haiku-20241022': 'claude-3-5-haiku@20241022',
-  'claude-3-5-haiku': 'claude-3-5-haiku',
-};
-
-// Dynamic translation: convert -YYYYMMDD to @YYYYMMDD for any model
-function translateModel(model) {
-  // First check static map
-  if (MODEL_MAP[model]) {
-    const translated = MODEL_MAP[model];
-    console.log(`[Model] Translated: ${model} → ${translated}`);
-    return translated;
-  }
-
-  // Dynamic: replace trailing -YYYYMMDD with @YYYYMMDD
-  const datePattern = /-(\d{8})$/;
-  if (datePattern.test(model)) {
-    const translated = model.replace(datePattern, '@$1');
-    console.log(`[Model] Translated: ${model} → ${translated}`);
-    return translated;
-  }
-
-  return model;
-}
+// translateModel imported from ./model-translator.js
 
 // Health check
 app.get('/health', (req, res) => res.json({ status: 'ok', region: process.env.VERTEX_REGION }));
@@ -293,6 +255,7 @@ function calculateActualCost(response, model) {
   // Get pricing from cost-tracker
   // Default to Opus pricing if model not found
   const VERTEX_EU_PRICING = {
+    'claude-opus-4-7': { input: 5.50, output: 27.50 },
     'claude-opus-4-6': { input: 5.50, output: 27.50 },
     'claude-sonnet-4-6': { input: 3.30, output: 16.50 },
     'claude-opus-4-5': { input: 5.50, output: 27.50 },
@@ -411,6 +374,20 @@ app.post('/v1/messages', async (req, res) => {
     const stats = pseudonymizer.getStats();
     if (stats.totalRedacted > 0) {
       console.log(`[PII] Redacted ${stats.totalRedacted} items:`, stats.byType);
+    }
+
+    // 1b. Reject models not yet available on Vertex AI europe-west1
+    if (isModelDisabled(req.body.model)) {
+      console.log(`[Model] Rejected disabled model: ${req.body.model}`);
+      return res.status(503).json({
+        type: 'error',
+        error: {
+          type: 'model_not_available',
+          message: `Model "${req.body.model}" is not yet available on Vertex AI europe-west1. ` +
+                   `To enable once it lands on Vertex EU, remove it from DISABLED_MODELS in src/model-translator.js.`,
+          disabled_models: getDisabledModels(),
+        },
+      });
     }
 
     // 2. Translate model name for Vertex AI
@@ -549,48 +526,96 @@ function depseudonymizeResponse(response, pseudonymizer) {
   return { ...response, content: cleanContent };
 }
 
-// Handle streaming responses
+// Handle streaming responses — full SSE passthrough with PII redaction on text_delta only.
+// Forwards all event types (thinking_delta, content_block_start, etc.) so extended
+// thinking (effortLevel: "high") works correctly through the proxy.
 async function handleStreaming(req, res, messages, pseudonymizer, vertexModel, startTime, requestId, estimate) {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
 
   const stream = streamMessage({ ...(req.sanitizedBody || req.body), model: vertexModel, messages });
-  let textBuffer = '';
 
-  stream.on('text', (text) => {
-    // Buffer to handle token boundaries (e.g., EMAIL_1 split as EMA + IL_1)
-    textBuffer += text;
+  // Per-block PII buffers keyed by block index (handles interleaved thinking+text blocks)
+  const textBuffers = {};
 
-    // Check for complete tokens and flush
-    const { clean, remainder } = flushBuffer(textBuffer, pseudonymizer);
-    textBuffer = remainder;
+  function writeEvent(type, data) {
+    res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+  }
 
-    if (clean) {
-      res.write(`event: content_block_delta\ndata: ${JSON.stringify({
-        type: 'content_block_delta',
-        delta: { type: 'text_delta', text: clean }
-      })}\n\n`);
+  try {
+    for await (const event of stream) {
+      switch (event.type) {
+        case 'message_start':
+          writeEvent('message_start', event);
+          break;
+
+        case 'content_block_start':
+          if (event.content_block?.type === 'text') {
+            textBuffers[event.index] = '';
+          }
+          writeEvent('content_block_start', event);
+          break;
+
+        case 'content_block_delta':
+          if (event.delta?.type === 'text_delta' && event.index in textBuffers) {
+            // Buffer text for PII token boundary handling
+            textBuffers[event.index] += event.delta.text;
+            const { clean, remainder } = flushBuffer(textBuffers[event.index], pseudonymizer);
+            textBuffers[event.index] = remainder;
+            if (clean) {
+              writeEvent('content_block_delta', { ...event, delta: { ...event.delta, text: clean } });
+            }
+          } else {
+            // thinking_delta, input_json_delta — pass through unchanged
+            writeEvent('content_block_delta', event);
+          }
+          break;
+
+        case 'content_block_stop':
+          // Flush any remaining PII buffer for this text block before closing it
+          if (event.index in textBuffers && textBuffers[event.index]) {
+            const clean = pseudonymizer.depseudonymize(textBuffers[event.index]);
+            delete textBuffers[event.index];
+            if (clean) {
+              writeEvent('content_block_delta', {
+                type: 'content_block_delta',
+                index: event.index,
+                delta: { type: 'text_delta', text: clean },
+              });
+            }
+          }
+          writeEvent('content_block_stop', event);
+          break;
+
+        case 'message_delta':
+          writeEvent('message_delta', event);
+          break;
+
+        case 'message_stop':
+          writeEvent('message_stop', event);
+          res.end();
+          break;
+
+        default:
+          writeEvent(event.type, event);
+      }
     }
-  });
-
-  stream.on('message', async (message) => {
-    // Flush any remaining buffer
-    if (textBuffer) {
-      const clean = pseudonymizer.depseudonymize(textBuffer);
-      res.write(`event: content_block_delta\ndata: ${JSON.stringify({
-        type: 'content_block_delta',
-        delta: { type: 'text_delta', text: clean }
-      })}\n\n`);
+  } catch (error) {
+    console.error('[Streaming] Error:', error.message);
+    if (!res.writableEnded) {
+      writeEvent('error', { type: 'error', message: error.message });
+      res.end();
     }
+    return;
+  }
 
-    // Record tool uses from streamed response
+  // Post-stream: record usage + log to BigQuery (fire-and-forget, res already ended)
+  try {
+    const message = await stream.finalMessage();
     recordToolUsesFromResponse(message);
-
-    // Record usage and calculate cost for streaming
     recordUsage(message, vertexModel);
 
-    // Log to BigQuery asynchronously (non-blocking)
     if (await isInitialized()) {
       const actualCost = calculateActualCost(message, vertexModel);
       const metadata = formatMetadata({
@@ -612,22 +637,13 @@ async function handleStreaming(req, res, messages, pseudonymizer, vertexModel, s
         response_time_ms: Date.now() - startTime,
         user_context: hashUserId(req.get('x-user-id') || 'unknown')
       });
-
-      // Fire-and-forget: don't await, don't block response
       logRequest(metadata).catch(err => {
         console.error('[BigQuery] Async log error (streaming):', err.message);
       });
     }
-
-    res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
-    res.end();
-  });
-
-  stream.on('error', (error) => {
-    console.error('[Streaming] Error:', error.message);
-    res.write(`event: error\ndata: ${JSON.stringify({ type: 'error', message: error.message })}\n\n`);
-    res.end();
-  });
+  } catch (e) {
+    console.error('[Streaming] Post-stream tracking error:', e.message);
+  }
 }
 
 // Flush buffer while keeping potential partial tokens
@@ -682,12 +698,18 @@ function recordToolUsesFromResponse(response) {
   }
 }
 
-// Start server
+// Start server — only when this file is executed directly (not when imported by tests)
+import { pathToFileURL } from 'url';
+const isMainModule = import.meta.url === pathToFileURL(process.argv[1] || '').href;
 const PORT = process.env.PORT || 3030;
-app.listen(PORT, () => {
-  console.log(`[Proxy] Claude EU Proxy running on http://localhost:${PORT}`);
-  console.log(`[Proxy] Region: ${process.env.VERTEX_REGION || 'europe-west1'}`);
-  console.log(`[Proxy] Project: ${process.env.GCP_PROJECT_ID || 'woolsocks-marketing-ai'}`);
-  console.log(`[Proxy] Set: export ANTHROPIC_BASE_URL=http://localhost:${PORT}`);
-  console.log(`[Proxy] Rate limits active:`, getStats() || 'none yet');
-});
+if (isMainModule) {
+  app.listen(PORT, () => {
+    console.log(`[Proxy] Claude EU Proxy running on http://localhost:${PORT}`);
+    console.log(`[Proxy] Region: ${process.env.VERTEX_REGION || 'europe-west1'}`);
+    console.log(`[Proxy] Project: ${process.env.GCP_PROJECT_ID || 'woolsocks-marketing-ai'}`);
+    console.log(`[Proxy] Set: export ANTHROPIC_BASE_URL=http://localhost:${PORT}`);
+    console.log(`[Proxy] Rate limits active:`, getStats() || 'none yet');
+  });
+}
+
+export { app };

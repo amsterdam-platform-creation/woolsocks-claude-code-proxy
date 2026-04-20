@@ -10,6 +10,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const COSTS_FILE = path.join(__dirname, '..', 'costs-history.json');
 
 const VERTEX_EU_PRICING = {
+  // Claude Opus 4.7 (europe-west1 regional pricing — same tier as Opus 4.6)
+  'claude-opus-4-7': { input: 5.50, output: 27.50, cacheWrite: 6.875, cacheRead: 0.55 },
   // Claude Opus 4.6 (europe-west1 regional pricing)
   'claude-opus-4-6': { input: 5.50, output: 27.50, cacheWrite: 6.875, cacheRead: 0.55 },
 
